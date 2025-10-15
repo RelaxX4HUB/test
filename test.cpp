@@ -1,24 +1,23 @@
-﻿#include <iostream>
+#include <iostream>
 #include <vector>
 #include <string>
 #include <fstream>
 #include <sstream>
 #include <cstdlib>
+#include <cstdio>
+#include <cstring>
+#include <unistd.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 
 #define STB_IMAGE_IMPLEMENTATION
-#include "C:\Users\K9nx._\Downloads\stb-master\stb-master\stb_image.h"
+#include "stb_image.h"
 #define STB_IMAGE_RESIZE_IMPLEMENTATION
 #include "stb_image_resize.h"
-
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-
-#include <winsock2.h>
-#include <ws2tcpip.h>
-
-#pragma comment(lib, "ws2_32.lib")
-#pragma comment(lib, "wininet.lib")
 
 struct ImageData {
     int width;
@@ -29,11 +28,11 @@ struct ImageData {
 class SimpleImageServer {
 private:
     static std::string getTempFilePath() {
-        char tempPath[MAX_PATH];
-        char tempFile[MAX_PATH];
-        GetTempPathA(MAX_PATH, tempPath);
-        GetTempFileNameA(tempPath, "IMG", 0, tempFile);
-        return std::string(tempFile);
+        char filename[] = "/tmp/imgXXXXXX";
+        int fd = mkstemp(filename);
+        if (fd == -1) throw std::runtime_error("Failed to create temp file");
+        close(fd);
+        return std::string(filename);
     }
 
     static bool downloadImageFromUrl(const std::string& url, const std::string& localPath) {
@@ -43,7 +42,6 @@ private:
             std::cerr << "curl failed with code: " << result << std::endl;
             return false;
         }
-
         std::ifstream file(localPath, std::ios::binary | std::ios::ate);
         if (!file.is_open() || file.tellg() == 0) {
             std::cerr << "Downloaded file is empty or doesn't exist" << std::endl;
@@ -87,25 +85,23 @@ public:
 
         if (isUrl) {
             localPath = getTempFilePath();
-            std::cout << "->..." << std::endl;
+            std::cout << "-> Downloading..." << std::endl;
             if (!downloadImageFromUrl(filename, localPath)) {
-                throw std::runtime_error("WTF URL ->: " + filename);
+                throw std::runtime_error("Failed to download URL ->: " + filename);
             }
             std::cout << "To ->: " << localPath << std::endl;
         }
 
         int width, height, channels;
         unsigned char* data = stbi_load(localPath.c_str(), &width, &height, &channels, 3);
-        
+
         if (isUrl) {
             std::remove(localPath.c_str());
         }
 
         if (!data) {
-            throw std::runtime_error("WTF IMAGE ->" + filename);
+            throw std::runtime_error("Failed to load image -> " + filename);
         }
-
-        std::cout << "Size X,Y,Z->: " << width << "x" << height << std::endl;
 
         std::vector<unsigned char> imageData(data, data + width * height * 3);
         stbi_image_free(data);
@@ -124,8 +120,6 @@ public:
             imageData = std::move(resized_data);
             width = new_width;
             height = new_height;
-
-            std::cout << "Resized ->" << width << "x" << height << std::endl;
         }
 
         ImageData result;
@@ -144,64 +138,53 @@ public:
             }
         }
 
-        std::cout << "==============================" << std::endl;
         return result;
     }
 
     static void startServer(int port = 8787) {
-
-        WSADATA wsaData;
-        if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-            std::cerr << "WSAStartup failed" << std::endl;
-            return;
+        int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (server_fd == 0) {
+            perror("Socket failed");
+            exit(EXIT_FAILURE);
         }
 
-        SOCKET serverSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-        if (serverSocket == INVALID_SOCKET) {
-            std::cerr << "Socket creation failed" << std::endl;
-            WSACleanup();
-            return;
+        int opt = 1;
+        setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt));
+
+        struct sockaddr_in address;
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = INADDR_ANY;
+        address.sin_port = htons(port);
+
+        if (bind(server_fd, (struct sockaddr*)&address, sizeof(address)) < 0) {
+            perror("Bind failed");
+            exit(EXIT_FAILURE);
         }
 
-        sockaddr_in serverAddr;
-        serverAddr.sin_family = AF_INET;
-        serverAddr.sin_addr.s_addr = INADDR_ANY;
-        serverAddr.sin_port = htons(port);
-
-        if (bind(serverSocket, (sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
-            std::cerr << "Bind failed" << std::endl;
-            closesocket(serverSocket);
-            WSACleanup();
-            return;
+        if (listen(server_fd, 10) < 0) {
+            perror("Listen failed");
+            exit(EXIT_FAILURE);
         }
 
-        if (listen(serverSocket, 10) == SOCKET_ERROR) {
-            std::cerr << "Listen failed" << std::endl;
-            closesocket(serverSocket);
-            WSACleanup();
-            return;
-        }
-
-        std::cout << "->: http://localhost:" << port << std::endl;
+        std::cout << "Server running at http://0.0.0.0:" << port << std::endl;
 
         while (true) {
-            SOCKET clientSocket = accept(serverSocket, NULL, NULL);
-            if (clientSocket == INVALID_SOCKET) {
-                std::cerr << "Accept failed" << std::endl;
+            int addrlen = sizeof(address);
+            int client_fd = accept(server_fd, (struct sockaddr*)&address, (socklen_t*)&addrlen);
+            if (client_fd < 0) {
+                perror("Accept failed");
                 continue;
             }
 
-            char buffer[4096];
-            int bytesReceived = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
+            char buffer[8192];
+            int bytesReceived = read(client_fd, buffer, sizeof(buffer) - 1);
             if (bytesReceived > 0) {
                 buffer[bytesReceived] = '\0';
                 std::string request(buffer);
-
                 std::string response;
 
                 if (request.find("GET /?url=") != std::string::npos) {
                     try {
-
                         size_t url_start = request.find("url=") + 4;
                         size_t url_end = request.find(" HTTP/");
                         std::string image_url = request.substr(url_start, url_end - url_start);
@@ -226,51 +209,40 @@ public:
                             }
                         }
 
-                        std::cout << "Processing: " << decoded_url << " (resize: " << resize << ")" << std::endl;
-
                         auto image_data = loadImage(decoded_url, resize);
                         std::string json_response = createJsonResponse(image_data);
 
                         response = "HTTP/1.1 200 OK\r\n"
-                            "Content-Type: application/json\r\n"
-                            "Access-Control-Allow-Origin: *\r\n"
-                            "Content-Length: " + std::to_string(json_response.length()) + "\r\n"
-                            "\r\n" + json_response;
-
-                    }
-                    catch (const std::exception& e) {
-                        std::string error_msg = "{\"error\":\"Failed to process image: " + std::string(e.what()) + "\"}";
+                                   "Content-Type: application/json\r\n"
+                                   "Access-Control-Allow-Origin: *\r\n"
+                                   "Content-Length: " + std::to_string(json_response.size()) + "\r\n"
+                                   "\r\n" + json_response;
+                    } catch (const std::exception& e) {
+                        std::string error_msg = "{\"error\":\"Failed: " + std::string(e.what()) + "\"}";
                         response = "HTTP/1.1 500 Internal Server Error\r\n"
-                            "Content-Type: application/json\r\n"
-                            "Content-Length: " + std::to_string(error_msg.length()) + "\r\n"
-                            "\r\n" + error_msg;
+                                   "Content-Type: application/json\r\n"
+                                   "Content-Length: " + std::to_string(error_msg.size()) + "\r\n"
+                                   "\r\n" + error_msg;
                     }
-                }
-                else {
+                } else {
                     std::string welcome = "{\"message\":\"Image Parser Server - Use /?url=IMAGE_URL&resize=SIZE\"}";
                     response = "HTTP/1.1 200 OK\r\n"
-                        "Content-Type: application/json\r\n"
-                        "Content-Length: " + std::to_string(welcome.length()) + "\r\n"
-                        "\r\n" + welcome;
+                               "Content-Type: application/json\r\n"
+                               "Content-Length: " + std::to_string(welcome.size()) + "\r\n"
+                               "\r\n" + welcome;
                 }
 
-                send(clientSocket, response.c_str(), response.length(), 0);
+                write(client_fd, response.c_str(), response.size());
             }
-
-            closesocket(clientSocket);
+            close(client_fd);
         }
 
-        closesocket(serverSocket);
-        WSACleanup();
+        close(server_fd);
     }
 };
 
 int main() {
     std::cout << "=== API ===" << std::endl;
-
     SimpleImageServer::startServer(8787);
-
     return 0;
-
 }
-
