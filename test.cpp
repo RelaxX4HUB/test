@@ -8,7 +8,7 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "C:\Users\K9nx._\Downloads\stb-master\stb-master\stb_image.h"
 #define STB_IMAGE_RESIZE_IMPLEMENTATION
-#include "../../../../Downloads/stb-master/stb-master/deprecated/stb_image_resize.h"
+#include "stb_image_resize.h"
 
 #define NOMINMAX
 #include <winsock2.h>
@@ -268,4 +268,5 @@ int main() {
     SimpleImageServer::startServer(8787);
 
     return 0;
+
 }
