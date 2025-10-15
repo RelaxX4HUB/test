@@ -10,7 +10,10 @@
 #define STB_IMAGE_RESIZE_IMPLEMENTATION
 #include "stb_image_resize.h"
 
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
+
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
@@ -270,3 +273,4 @@ int main() {
     return 0;
 
 }
+
